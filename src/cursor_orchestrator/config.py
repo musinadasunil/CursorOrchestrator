@@ -5,7 +5,13 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yaml"
+# Bundled alongside this module (see pyproject.toml's package-data), not
+# computed relative to a "repo root" -- a path guess like that only works
+# for an editable (`pipx install -e .`) install; a real install copies the
+# package into site-packages with no src/ layout at all, and the guess
+# lands somewhere nonexistent. Living next to config.py resolves correctly
+# either way.
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 
 class ConfigError(ValueError):

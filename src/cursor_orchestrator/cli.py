@@ -77,7 +77,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="walk the full flow with mock clients -- no network calls, no real PR",
     )
     parser.add_argument(
-        "--config", default=DEFAULT_CONFIG_PATH, help="path to config.yaml (default: repo root)"
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help="path to config.yaml (default: the copy bundled with the installed package)",
     )
     parser.add_argument(
         "--repo", default=".", help="path to the git repo to operate in (ignored in --dry-run)"

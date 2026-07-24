@@ -21,4 +21,4 @@ dev = ["pytest>=8.0"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-cursor_orchestrator = ["pr_template.md"]
+cursor_orchestrator = ["pr_template.md", "config.yaml"]

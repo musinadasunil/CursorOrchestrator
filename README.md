@@ -55,11 +55,16 @@ guarantee, not a convention.
 
 ## Config
 
-Every tunable and model name lives in `config.yaml` (see that file, or
-pass `--config /path/to/other.yaml`). `config.py` validates it at load
+Every tunable and model name lives in `config.yaml`
+(`src/cursor_orchestrator/config.yaml` in this repo) -- it ships bundled
+with the package, so it's found the same way whether you installed
+editable (`pipx install -e .`) or not. `config.py` validates it at load
 time -- in particular, `models.reviewer` must differ from
 `models.implementer`, since that's the whole point of an independent
 review.
+
+To use your own settings without editing the installed copy, copy that
+file somewhere and pass `--config /path/to/your-config.yaml`.
 
 ## Tests
 
