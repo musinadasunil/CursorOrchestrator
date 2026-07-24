@@ -8,9 +8,19 @@ from cursor_orchestrator.clients.base import (
     CursorClientBase,
     PullRequest,
     ReviewComment,
+    ReviewerClientBase,
     TestClientBase,
 )
-from cursor_orchestrator.models import Plan, SubTask, TestResult
+from cursor_orchestrator.models import (
+    Plan,
+    ReviewFinding,
+    ReviewResult,
+    SubTask,
+    SubTaskResult,
+    TestResult,
+    Verdict,
+)
+from cursor_orchestrator.prompts import REVIEWER_SYSTEM_PROMPT
 
 # NOTE (see PLAN.md "Honest risk notes"): the cursor-agent CLI surface is a
 # moving target. Every subprocess call below is a starting point, not
@@ -21,12 +31,25 @@ from cursor_orchestrator.models import Plan, SubTask, TestResult
 # API, since PR lifecycle and CI status are a hosting-provider concern,
 # not an agent concern. Requires `gh auth login` to already be done.
 
+_REVIEW_RESULT_SCHEMA_HINT = """\
+Respond with ONLY a JSON object of this exact shape, no prose outside it:
+{
+  "verdict": "ready_for_pr" | "needs_revision",
+  "findings": [{"subtask_id": "...", "severity": "blocking"|"major"|"minor", "message": "..."}],
+  "revision_requests": {"<subtask_id>": "<concrete instructions>"}
+}
+"""
 
-class CursorCliClient(CursorClientBase, TestClientBase):
-    """Real implementation via subprocess calls to `cursor-agent` (plan +
-    implement) and `gh` (PR lifecycle + CI status). One instance is
-    constructed per role (planner/implementer/tester) with that role's
-    configured model -- see config.yaml's `models` section.
+
+class CursorCliClient(CursorClientBase, TestClientBase, ReviewerClientBase):
+    """Real implementation via subprocess calls to `cursor-agent` (plan,
+    implement, test, and review) and `gh` (PR lifecycle + CI status). One
+    instance is constructed per role (planner/implementer/tester/reviewer)
+    with that role's configured model -- see config.yaml's `models`
+    section. The reviewer role is just another `cursor-agent` invocation
+    pointed at a different model than the implementer -- config.py enforces
+    `models.reviewer != models.implementer` at load time so "independent
+    second opinion" stays a structural guarantee, not a convention.
     """
 
     def __init__(self, model: str) -> None:
@@ -81,6 +104,57 @@ class CursorCliClient(CursorClientBase, TestClientBase):
         payload = json.loads(result.stdout)
         return TestResult(
             subtask_id=subtask.id, passed=payload["passed"], details=payload.get("details", "")
+        )
+
+    def review(
+        self, original_prompt: str, plan_summary: str, subtask_results: list[SubTaskResult]
+    ) -> ReviewResult:
+        # Auto-block on any failed test result before spending a model call
+        # confirming what's already a fact -- see PLAN.md's single-verdict
+        # design (Reviewer is the only place a verdict is produced, but a
+        # failing TestResult short-circuits it).
+        failing = [r for r in subtask_results if r.test_result and not r.test_result.passed]
+        if failing:
+            return ReviewResult(
+                verdict=Verdict.NEEDS_REVISION,
+                findings=[
+                    ReviewFinding(
+                        subtask_id=r.subtask.id,
+                        severity="blocking",
+                        message=f"tests failed: {r.test_result.details}",
+                    )
+                    for r in failing
+                ],
+                revision_requests={r.subtask.id: "fix the failing tests" for r in failing},
+            )
+
+        prompt = (
+            f"{REVIEWER_SYSTEM_PROMPT}\n\n"
+            f"Original prompt (review against this, not a summary of it):\n{original_prompt}\n\n"
+            f"Plan summary: {plan_summary}\n\n"
+            f"{self._render_subtask_results(subtask_results)}\n\n{_REVIEW_RESULT_SCHEMA_HINT}"
+        )
+        result = self._run_cursor_agent(["--mode", "print", "--model", self.model, prompt])
+        payload = json.loads(result.stdout)
+        return ReviewResult(
+            verdict=Verdict(payload["verdict"]),
+            findings=[
+                ReviewFinding(
+                    subtask_id=f["subtask_id"], severity=f["severity"], message=f["message"]
+                )
+                for f in payload.get("findings", [])
+            ],
+            revision_requests=payload.get("revision_requests", {}),
+        )
+
+    def _render_subtask_results(self, subtask_results: list[SubTaskResult]) -> str:
+        return "\n\n".join(
+            f"### Subtask {r.subtask.id}: {r.subtask.description}\n"
+            f"Rationale: {r.rationale}\n"
+            f"Test result: {'PASS' if r.test_result and r.test_result.passed else 'FAIL'} "
+            f"({r.test_result.details if r.test_result else 'no test result'})\n"
+            f"Diff:\n```\n{r.diff}\n```"
+            for r in subtask_results
         )
 
     def create_pr(self, branch: str, base_branch: str, title: str, body: str) -> PullRequest:

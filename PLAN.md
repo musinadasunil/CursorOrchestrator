@@ -180,18 +180,18 @@ stops (no auto-resolve) on merge conflict. This is the piece that makes
 without it, "parallel worktrees merging into one branch" is just prose.
 
 ### `clients/cursor_cli_client.py`
-Real implementation via subprocess calls to the `cursor-agent` CLI
-(plan mode + background agent dispatch) and/or the Background Agent REST
-API for parallel cloud execution.
+Real implementation via subprocess calls to the `cursor-agent` CLI —
+plan, implement, test, *and* review are all `cursor-agent` invocations,
+each constructed with that role's configured `--model`. The reviewer is
+just another `cursor-agent` call pointed at a different model than the
+implementer (`config.py` enforces `models.reviewer != models.implementer`
+at load time, so "independent second opinion" is structural, not
+convention). PR lifecycle and CI status go through the `gh` CLI instead,
+since that's a hosting-provider concern, not an agent concern.
 **Verify against your installed `cursor-agent --help` / current Cursor
 docs before relying on this** — exact flags and the API surface have been
 changing release to release; treat the flags in this file as a starting
 point, not gospel.
-
-### `clients/anthropic_reviewer_client.py`
-Real implementation using the Anthropic Python SDK — a different model
-than whatever Cursor is running as implementer (e.g., implementer on
-Composer/GPT/Cursor's own model, reviewer on Claude, or vice versa).
 
 ### `clients/mock_clients.py`
 Fully working fakes with no network calls — used to unit-test the
@@ -223,7 +223,7 @@ Filled at step [6]: prompt, plan, per-subtask rationale, reviewer findings
 ### `cli.py`
 Entry point: `python cli.py "build a feature that..."` — wires real clients
 together, or `--dry-run` to use the mocks and walk the flow without
-touching Cursor/Anthropic at all.
+touching Cursor at all.
 
 ---
 

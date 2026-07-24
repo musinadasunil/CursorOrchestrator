@@ -1,8 +1,11 @@
 models:
-  planner: "cursor-default"
-  implementer: "cursor-default"
-  tester: "cursor-default"
-  reviewer: "claude-sonnet-5" # must differ from implementer -- enforced at load time
+  planner: "sonnet-4.5"
+  implementer: "sonnet-4.5"
+  tester: "sonnet-4.5"
+  reviewer: "gpt-5" # must differ from implementer -- enforced at load time
+  # All four are passed straight through as `cursor-agent --model <name>`.
+  # Verify these names against `cursor-agent --help` / `cursor-agent models`
+  # on your installed version before a real run -- see PLAN.md's risk note.
 
 limits:
   max_parallel_agents: 3

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from cursor_orchestrator.clients.anthropic_reviewer_client import AnthropicReviewerClient
 from cursor_orchestrator.clients.cursor_cli_client import CursorCliClient
 from cursor_orchestrator.clients.mock_clients import (
     MockCursorClient,
@@ -32,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_client = CursorCliClient(model=config.models.planner)
         cursor_client = CursorCliClient(model=config.models.implementer)
         test_client = CursorCliClient(model=config.models.tester)
-        reviewer_client = AnthropicReviewerClient(model=config.models.reviewer)
+        reviewer_client = CursorCliClient(model=config.models.reviewer)
 
     orchestrator = Orchestrator(
         config=config,

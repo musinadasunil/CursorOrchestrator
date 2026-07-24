@@ -39,7 +39,12 @@ A real (non-dry-run) run needs:
   against your installed version -- see the note in
   `src/cursor_orchestrator/clients/cursor_cli_client.py`)
 - the GitHub `gh` CLI installed and authenticated (`gh auth login`)
-- an `ANTHROPIC_API_KEY` environment variable set (used for the reviewer)
+
+Planner, implementer, tester, and reviewer are all `cursor-agent`, just
+pointed at different `--model` values per `config.yaml` -- the reviewer
+is enforced (at config load time) to use a different model than the
+implementer, so the "independent second opinion" is a structural
+guarantee, not a convention.
 
 ## Config
 
