@@ -7,6 +7,7 @@ from cursor_orchestrator.clients.cursor_cli_client import CursorCliClient
 from cursor_orchestrator.clients.github_api_client import GithubApiClient, GithubApiError
 from cursor_orchestrator.clients.mock_clients import (
     MockCursorClient,
+    MockPlanCriticClient,
     MockReviewerClient,
     MockTestClient,
 )
@@ -26,11 +27,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         cursor_client = MockCursorClient()
         planner_client = cursor_client
+        plan_critic_client = MockPlanCriticClient()
         test_client = MockTestClient()
         reviewer_client = MockReviewerClient()
     else:
-        planner_client = CursorCliClient(model=config.models.planner)
-        implementer_agent = CursorCliClient(model=config.models.implementer)
+        def _agent(model: str) -> CursorCliClient:
+            return CursorCliClient(
+                model=model,
+                cursor_agent_timeout_seconds=config.limits.cursor_agent_timeout_seconds,
+                gh_timeout_seconds=config.limits.gh_timeout_seconds,
+            )
+
+        planner_client = _agent(config.models.planner)
+        plan_critic_client = _agent(config.models.plan_critic)
+        implementer_agent = _agent(config.models.implementer)
         if config.git.pr_backend == "api":
             try:
                 cursor_client = GithubApiClient(agent_client=implementer_agent, repo_path=args.repo)
@@ -39,13 +49,20 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
         else:
             cursor_client = implementer_agent
-        test_client = CursorCliClient(model=config.models.tester)
-        reviewer_client = CursorCliClient(model=config.models.reviewer)
+        test_client = CursorCliClient(
+            model=config.models.tester,
+            cursor_agent_timeout_seconds=config.limits.cursor_agent_timeout_seconds,
+            gh_timeout_seconds=config.limits.gh_timeout_seconds,
+            test_command=config.testing.command,
+            test_timeout_seconds=config.testing.timeout_seconds,
+        )
+        reviewer_client = _agent(config.models.reviewer)
 
     orchestrator = Orchestrator(
         config=config,
         cursor_client=cursor_client,
         planner_client=planner_client,
+        plan_critic_client=plan_critic_client,
         test_client=test_client,
         reviewer_client=reviewer_client,
         dry_run=args.dry_run,

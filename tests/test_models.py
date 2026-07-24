@@ -43,6 +43,18 @@ def test_parallel_groups_raises_on_cycle():
         plan.parallel_groups()
 
 
+def test_parallel_groups_raises_on_duplicate_subtask_ids():
+    # Planner output is model-generated, not guaranteed unique -- a
+    # collision must fail loudly rather than silently dropping one of the
+    # colliding subtasks from execution.
+    plan = _plan(
+        SubTask(id="a", description="first a"),
+        SubTask(id="a", description="second a, same id"),
+    )
+    with pytest.raises(ValueError, match="duplicate subtask ids"):
+        plan.parallel_groups()
+
+
 def test_chunked_parallel_groups_respects_cap():
     plan = _plan(*(SubTask(id=str(i), description=str(i)) for i in range(5)))
     chunks = plan.chunked_parallel_groups(max_parallel_agents=2)

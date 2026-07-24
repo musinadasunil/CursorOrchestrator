@@ -21,6 +21,7 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class ModelsConfig:
     planner: str
+    plan_critic: str
     implementer: str
     tester: str
     reviewer: str
@@ -33,6 +34,8 @@ class LimitsConfig:
     max_babysit_iterations: int
     max_babysit_wall_clock_minutes: int
     babysit_poll_interval_seconds: float
+    cursor_agent_timeout_seconds: float
+    gh_timeout_seconds: float
 
 
 @dataclass(frozen=True)
@@ -42,10 +45,17 @@ class GitConfig:
 
 
 @dataclass(frozen=True)
+class TestingConfig:
+    command: str  # shell command run in each subtask's worktree, e.g. "pytest -q"
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
 class OrchestratorConfig:
     models: ModelsConfig
     limits: LimitsConfig
     git: GitConfig
+    testing: TestingConfig
 
     @staticmethod
     def from_yaml(path: Path | str = DEFAULT_CONFIG_PATH) -> "OrchestratorConfig":
@@ -60,6 +70,7 @@ class OrchestratorConfig:
             models=ModelsConfig(**_section(raw, "models")),
             limits=LimitsConfig(**_section(raw, "limits")),
             git=GitConfig(**_section(raw, "git")),
+            testing=TestingConfig(**_section(raw, "testing")),
         )
         config.validate()
         return config
@@ -72,6 +83,13 @@ class OrchestratorConfig:
                 "different model. Point them at different models in "
                 "config.yaml."
             )
+        if self.models.plan_critic == self.models.planner:
+            raise ConfigError(
+                "models.plan_critic must differ from models.planner -- "
+                "the whole point of the plan critique is a second opinion "
+                "from a different model. Point them at different models "
+                "in config.yaml."
+            )
         if self.limits.max_parallel_agents < 1:
             raise ConfigError("limits.max_parallel_agents must be >= 1")
         if self.limits.max_review_iterations < 1:
@@ -82,10 +100,22 @@ class OrchestratorConfig:
             raise ConfigError("limits.max_babysit_wall_clock_minutes must be >= 1")
         if self.limits.babysit_poll_interval_seconds <= 0:
             raise ConfigError("limits.babysit_poll_interval_seconds must be > 0")
+        if self.limits.cursor_agent_timeout_seconds <= 0:
+            raise ConfigError("limits.cursor_agent_timeout_seconds must be > 0")
+        if self.limits.gh_timeout_seconds <= 0:
+            raise ConfigError("limits.gh_timeout_seconds must be > 0")
         if self.git.pr_backend not in ("gh", "api"):
             raise ConfigError(
                 f"git.pr_backend must be 'gh' or 'api', got {self.git.pr_backend!r}"
             )
+        if not self.testing.command.strip():
+            raise ConfigError(
+                "testing.command must be a non-empty shell command (e.g. 'pytest -q') -- "
+                "without it, TestResult.passed would have to come from the agent's own "
+                "self-report instead of an independently-verified exit code."
+            )
+        if self.testing.timeout_seconds <= 0:
+            raise ConfigError("testing.timeout_seconds must be > 0")
 
 
 def _section(raw: dict, name: str) -> dict:

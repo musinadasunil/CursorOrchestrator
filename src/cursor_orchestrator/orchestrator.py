@@ -5,9 +5,14 @@ from dataclasses import dataclass
 from importlib import resources
 
 from cursor_orchestrator.branch_manager import BranchManager, NullBranchManager
-from cursor_orchestrator.clients.base import CursorClientBase, ReviewerClientBase, TestClientBase
+from cursor_orchestrator.clients.base import (
+    CursorClientBase,
+    PlanCriticClientBase,
+    ReviewerClientBase,
+    TestClientBase,
+)
 from cursor_orchestrator.config import OrchestratorConfig
-from cursor_orchestrator.models import Plan, ReviewResult, SubTaskResult, Verdict
+from cursor_orchestrator.models import Plan, PlanCritique, ReviewResult, SubTaskResult, Verdict
 
 
 class HumanGate:
@@ -17,12 +22,18 @@ class HumanGate:
     terminal, such as in tests.
     """
 
-    def approve_scope(self, plan: Plan) -> tuple[str, str]:
+    def approve_scope(self, plan: Plan, critique: PlanCritique | None = None) -> tuple[str, str]:
         """Returns (decision, feedback); decision in {"approve","edit","abort"}."""
         print("\n=== PLAN ===")
         print(plan.summary)
         for t in plan.subtasks:
             print(f"  - [{t.id}] {t.description} (depends_on={t.depends_on})")
+        if critique is not None:
+            print("\n=== PLAN CRITIQUE (second opinion -- verify, not fact) ===")
+            if not critique.findings:
+                print("  (no findings)")
+            for f in critique.findings:
+                print(f"  [{f.severity}] {f.message}")
         while True:
             choice = input("\nApprove this plan? [a]pprove / [e]dit / [x] abort: ").strip().lower()
             if choice in ("a", "approve"):
@@ -80,6 +91,7 @@ class Orchestrator:
         cursor_client: CursorClientBase,
         test_client: TestClientBase,
         reviewer_client: ReviewerClientBase,
+        plan_critic_client: PlanCriticClientBase,
         planner_client: CursorClientBase | None = None,
         human_gate: HumanGate | None = None,
         dry_run: bool = False,
@@ -90,6 +102,7 @@ class Orchestrator:
         self.planner_client = planner_client or cursor_client
         self.test_client = test_client
         self.reviewer_client = reviewer_client
+        self.plan_critic_client = plan_critic_client
         self.human_gate = human_gate or HumanGate()
         self.dry_run = dry_run
         self.repo_path = repo_path
@@ -142,7 +155,8 @@ class Orchestrator:
     def _plan_with_approval(self, prompt: str) -> Plan | None:
         plan = self.planner_client.plan(prompt)
         while True:
-            decision, feedback = self.human_gate.approve_scope(plan)
+            critique = self.plan_critic_client.critique(prompt, plan)
+            decision, feedback = self.human_gate.approve_scope(plan, critique)
             if decision == "approve":
                 return plan
             if decision == "abort":

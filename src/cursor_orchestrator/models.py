@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -36,6 +37,17 @@ class Plan:
         Each group's subtasks have no dependency on one another and can
         run concurrently; groups themselves must run in order.
         """
+        duplicates = sorted(
+            tid for tid, count in Counter(t.id for t in self.subtasks).items() if count > 1
+        )
+        if duplicates:
+            # Planner output is model-generated, not guaranteed unique -- a
+            # silent dict-comprehension overwrite below would drop one of
+            # the colliding subtasks from execution while `self.subtasks`
+            # (the raw list, e.g. what the human-gate printout shows) still
+            # lists both, which is a correctness bug worth failing loudly on.
+            raise ValueError(f"duplicate subtask ids in plan: {duplicates}")
+
         by_id = {t.id: t for t in self.subtasks}
         for task in self.subtasks:
             for dep in task.depends_on:
@@ -101,3 +113,27 @@ class SubTaskResult:
     rationale: str
     branch_or_worktree: str
     test_result: TestResult | None = None
+
+
+@dataclass
+class PlanCritiqueFinding:
+    severity: str  # "blocking" | "major" | "minor" -- advisory only, see PlanCritique
+    message: str
+
+
+@dataclass
+class PlanCritique:
+    """Advisory second opinion on the plan itself -- decomposition, missing
+    or unnecessary depends_on edges, over/under-granular subtasks. Shown to
+    the human alongside the plan at the scope-approval gate.
+
+    Deliberately has no verdict field and never auto-blocks anything: the
+    Reviewer role is the system's one and only verdict authority (see
+    PLAN.md's single-verdict-authority design). Adding a second thing that
+    looks like a gate here would reintroduce exactly the "who wins"
+    ambiguity that design was built to avoid. This is pure input to the
+    human's own approve/edit/abort decision, same spirit as the code
+    reviewer's findings being labeled "second opinion -- verify," not fact.
+    """
+
+    findings: list[PlanCritiqueFinding] = field(default_factory=list)

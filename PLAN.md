@@ -46,15 +46,27 @@ prompt
   ▼
 [1] PLANNER (Cursor agent, plan mode)
   → Plan { summary, subtasks[] }
-  each subtask: id, description, kind (stub | implement),
-                files_likely_touched, depends_on[]
+  each subtask: id, description, files_likely_touched, depends_on[]
   builds the dependency graph → decides which subtasks form a
   sequential chain vs. an independent parallel group
   │
   ▼
+[1b] PLAN CRITIQUE (different model than the planner)
+  → PlanCritique { findings[] (severity-labeled) }
+  an independent second opinion on the decomposition itself, before any
+  code exists: subtask sizing, missing/unnecessary depends_on edges,
+  prompt coverage, scope creep. Purely advisory -- no verdict, never
+  auto-blocks anything (the Reviewer role is the system's one and only
+  verdict authority; a second thing that looks like a gate here would
+  reintroduce the same "who wins" ambiguity that design avoids). Shown to
+  the human alongside the plan at the next step.
+  │
+  ▼
 [2] HUMAN SCOPE APPROVAL  ← blocking gate (approve / edit / abort)
+  - human sees the plan AND the plan critique together
   - "edit" loops back into the planner with the human's corrections,
-    re-presented until explicitly approved — this is not a one-shot ask
+    re-presented (re-critiqued too) until explicitly approved — this is
+    not a one-shot ask
   │
   ▼
 [3] BRANCH SETUP
@@ -153,21 +165,29 @@ prompt
 ## Component design
 
 ### `models.py`
-Dataclasses: `TaskStatus` (enum), `SubTask` (now with a `kind: STUB |
-IMPLEMENT` field), `Plan` (with `parallel_groups()` — topological
-batching), `TestResult`, `ReviewFinding`, `ReviewResult`.
+Dataclasses: `TaskStatus` (enum), `SubTask`, `Plan` (with
+`parallel_groups()` — topological batching; raises on an unknown
+dependency, a dependency cycle, *and* on duplicate subtask ids from the
+planner, since model-generated output isn't guaranteed unique and a
+silent dict-comprehension collision would drop a subtask from execution
+without anyone noticing), `TestResult`, `ReviewFinding`, `ReviewResult`,
+`PlanCritiqueFinding`, `PlanCritique` (advisory-only, no verdict field —
+see step [1b] in Flow).
 
 ### `prompts.py`
 - **Planner system prompt** — instructs decomposition into subtasks with
-  explicit `depends_on` edges, marks which (if any) subtask is a
-  stub/interface task that others depend on, and flags which subtasks (if
-  any) warrant a different model due to task type (e.g., a
-  security-sensitive subtask routed to a different model than routine
-  CRUD).
+  explicit `depends_on` edges. Dependency ordering alone determines
+  execution grouping; there is no separate stub/interface subtask kind.
+- **Plan critic system prompt** — instructs an independent critique of the
+  decomposition itself (subtask sizing, missing/unnecessary dependency
+  edges, prompt coverage, scope creep), severity-labeled findings, no
+  verdict.
 - **Tester system prompt** — instructed to write tests for edge cases and
-  failure paths, not just the happy path; instructed explicitly that a
-  test run against a stub only proves contract shape, not behavior, and
-  must be re-run against the real implementation.
+  failure paths, not just the happy path. It only writes the tests; it is
+  explicitly told it does not need to report whether they pass, because
+  that's independently verified by actually running `testing.command`
+  (see `cursor_cli_client.py`), not trusted from the agent's own
+  self-report.
 - **Reviewer system prompt** — the checklist above, instructed to review
   the diff *blind first* (before seeing implementer rationale) to avoid
   anchoring, then reconcile. Forced to output severity-labeled findings,
@@ -177,9 +197,9 @@ batching), `TestResult`, `ReviewFinding`, `ReviewResult`.
 Abstract interfaces: `CursorClientBase.plan()`, `.implement_subtask()`,
 `.create_pr()`, `.get_pr_status()`, `.get_pr_review_comments()`,
 `.push_fix_commit()`; `TestClientBase.write_and_run_tests()`;
-`ReviewerClientBase.review()`. Everything else in the system talks to
-these interfaces, not to a specific SDK — swap implementations without
-touching orchestrator logic.
+`ReviewerClientBase.review()`; `PlanCriticClientBase.critique()`.
+Everything else in the system talks to these interfaces, not to a
+specific SDK — swap implementations without touching orchestrator logic.
 
 ### `branch_manager.py`
 Owns the single feature branch's lifecycle: creates it, opens/tears down
@@ -190,18 +210,32 @@ stops (no auto-resolve) on merge conflict. This is the piece that makes
 without it, "parallel worktrees merging into one branch" is just prose.
 
 ### `clients/cursor_cli_client.py`
-Real implementation via subprocess calls to the `cursor-agent` CLI —
-plan, implement, test, *and* review are all `cursor-agent` invocations,
-each constructed with that role's configured `--model`. The reviewer is
-just another `cursor-agent` call pointed at a different model than the
-implementer (`config.py` enforces `models.reviewer != models.implementer`
-at load time, so "independent second opinion" is structural, not
-convention). PR lifecycle and CI status go through the `gh` CLI by
-default, since that's a hosting-provider concern, not an agent concern.
+Real implementation via subprocess calls to the `cursor-agent` CLI — plan,
+critique, implement, test, *and* review are all `cursor-agent`
+invocations, each constructed with that role's configured `--model`. Both
+the reviewer and the plan critic are just another `cursor-agent` call
+pointed at a different model than the role they're independently
+checking (`config.py` enforces `models.reviewer != models.implementer`
+and `models.plan_critic != models.planner` at load time, so "independent
+second opinion" is structural, not convention). PR lifecycle and CI
+status go through the `gh` CLI by default, since that's a
+hosting-provider concern, not an agent concern.
+
+Every `cursor-agent`/`gh` subprocess call has a hard timeout
+(`limits.cursor_agent_timeout_seconds` / `limits.gh_timeout_seconds`) —
+without one, a single hung process would hang the whole orchestrator
+forever, including mid-`babysit()`; this is a *per-call* cap, distinct
+from the iteration/wall-clock caps that bound the surrounding loops. The
+task/prompt text is passed via stdin rather than a trailing positional
+arg, to avoid `ARG_MAX`/escaping problems once a review's diffs get
+large. JSON parsed from a CLI's stdout is wrapped so a malformed or
+non-JSON response raises a clear error with the raw output attached,
+instead of a bare `JSONDecodeError`.
+
 **Verify against your installed `cursor-agent --help` / current Cursor
-docs before relying on this** — exact flags and the API surface have been
-changing release to release; treat the flags in this file as a starting
-point, not gospel.
+docs before relying on this** — exact flags, the stdin-input assumption,
+and the API surface have been changing release to release; treat the
+flags in this file as a starting point, not gospel.
 
 ### `clients/github_api_client.py`
 Drop-in alternative to `gh` for the PR-lifecycle methods only
@@ -223,16 +257,18 @@ see it.
 
 ### `clients/mock_clients.py`
 Fully working fakes with no network calls — used to unit-test the
-orchestration/state-machine logic (dependency batching, approval gate,
-revision loop, iteration cap, PR payload construction) independent of any
-live API.
+orchestration/state-machine logic (dependency batching, plan critique,
+approval gate, revision loop, iteration cap, PR payload construction)
+independent of any live API.
 
 ### `orchestrator.py`
 The state machine described in Flow above. Owns the group-by-group
-execution, the deterministic iteration cap and human-gate hand-off at
-[5b], and the human-approval blocking point at [2]. This is the part
-that's actually unit-testable without your credentials, and the part I
-ran `pytest` against before handing this over.
+execution, the plan-critique call at [1b] and human-approval blocking
+point at [2] (critique is re-run against every re-plan produced by an
+"edit" decision, not just the first draft), the deterministic iteration
+cap and human-gate hand-off at [5b]. This is the part that's actually
+unit-testable without your credentials, and the part I ran `pytest`
+against before handing this over.
 
 ### `babysitter.py`
 Owns step [7]. A polling loop (own iteration *and* wall-clock cap,
@@ -278,31 +314,30 @@ touching Cursor at all.
 - **Reviewer findings are a second opinion, not ground truth** — the PR
   template labels them as such on purpose. Don't let that framing erode
   over time.
+- **Plan critique is advisory, not a gate — even a "blocking"-severity
+  finding doesn't stop anything on its own.** The human at the
+  scope-approval gate can approve the plan anyway; nothing in the code
+  forces them to read or act on the critique before typing "a". That's a
+  deliberate tradeoff (see step [1b] in Flow — a second automatic gate
+  here would reintroduce the "who wins" ambiguity the single-verdict-
+  authority design was built to avoid), but it means the critique is only
+  as useful as the human actually reading it.
 - **Single feature branch doesn't eliminate merge conflicts, it just moves
   and multiplies them.** Instead of one conflict at PR time, you now get a
   potential conflict at every group boundary — worktree vs. current HEAD,
   every time a parallel group finishes. That surfaces problems earlier
   (good) but adds friction on every run that has more than one group
   (real cost, not free).
-- **Stub-first decomposition is a harder planning problem than file-level
-  dependency ordering.** The planner now has to correctly identify
-  interface boundaries, not just "what touches what." Get the stub's
-  contract wrong and every implementer built against it is wrong — and
-  you won't find out until the tester or reviewer catches it, later and
-  less obviously than a merge conflict would.
-- **Testing against a stub is a false-confidence trap if the plan doesn't
-  enforce the re-run.** A green test run against a stub proves the stub's
-  fake behavior, not the real implementation's. This only works if
-  `orchestrator.py` mechanically forces a second test pass once the real
-  implementation replaces the stub — if that's left to agent discipline
-  instead of the state machine, it will get skipped under iteration
-  pressure.
-- **Three-way loop (Implementer / Tester / Reviewer) has no reconciliation
-  rule yet.** If the tester says tests fail and the reviewer says
-  `ready_for_pr` in the same iteration — or vice versa — the plan doesn't
-  say who wins. Without an explicit precedence rule this can oscillate
-  quietly across iterations and burn the cap without the human ever
-  learning why.
+- **The Tester's test command is fixed and unscoped.** `testing.command`
+  runs the same way for every subtask, at the worktree root — there's no
+  attempt to select or limit tests to just the subtask's files. For a
+  large repo with a slow full suite, that's real wall-clock cost paid on
+  every subtask and every revision cycle, not just once at PR time. A
+  smarter setup (test impact analysis, per-subtask test filtering) is
+  possible but is the caller's responsibility to encode into
+  `testing.command` itself — the orchestrator doesn't attempt it.
+  Independent verification (see `write_and_run_tests()`'s real subprocess
+  run) is a hard requirement it enforces; being *fast* about it is not.
 - **"Few agents always" is stated intent, not an enforced limit.** Stub +
   N implementers + tester + reviewer, repeated across iterations and
   groups, is a bigger fan-out than the original two-role design. Nothing

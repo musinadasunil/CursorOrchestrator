@@ -1,9 +1,10 @@
 models:
   planner: "sonnet-4.5"
+  plan_critic: "gpt-5" # must differ from planner -- enforced at load time (independent second opinion on the plan itself)
   implementer: "sonnet-4.5"
   tester: "sonnet-4.5"
   reviewer: "gpt-5" # must differ from implementer -- enforced at load time
-  # All four are passed straight through as `cursor-agent --model <name>`.
+  # All five are passed straight through as `cursor-agent --model <name>`.
   # Verify these names against `cursor-agent --help` / `cursor-agent models`
   # on your installed version before a real run -- see PLAN.md's risk note.
 
@@ -13,6 +14,14 @@ limits:
   max_babysit_iterations: 10
   max_babysit_wall_clock_minutes: 120
   babysit_poll_interval_seconds: 30
+  # A hung cursor-agent/gh subprocess would otherwise hang the whole
+  # orchestrator forever -- these are hard caps on a single subprocess call,
+  # separate from the iteration/wall-clock caps above (which bound the
+  # whole loop, not one call). cursor-agent can legitimately run long (real
+  # planning/coding/testing work); gh is a lightweight API call and should
+  # return in seconds.
+  cursor_agent_timeout_seconds: 600
+  gh_timeout_seconds: 30
 
 git:
   base_branch: "main"
@@ -22,3 +31,13 @@ git:
   #       GITHUB_TOKEN (or GH_TOKEN) env var with repo/PR scope. Use "api"
   #       if `gh` isn't installable/allowed on this machine.
   pr_backend: "gh"
+
+testing:
+  # Real shell command, run independently by the orchestrator (not
+  # self-reported by the agent) in each subtask's worktree after the Tester
+  # agent writes test code -- this is what TestResult.passed actually comes
+  # from. Same command runs for every subtask at the worktree root; it is
+  # NOT scoped to just the subtask's files. Set this to whatever actually
+  # runs this repo's tests, e.g. "pytest -q", "npm test", "go test ./...".
+  command: "pytest -q"
+  timeout_seconds: 300

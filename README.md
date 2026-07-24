@@ -46,12 +46,28 @@ A real (non-dry-run) run needs:
   variable with repo/PR scope -- owner/repo and the API host are
   auto-detected from the repo's `origin` remote (GitHub.com and GitHub
   Enterprise both work).
+- `testing.command` in `config.yaml` set to whatever actually runs this
+  repo's tests (e.g. `"pytest -q"`, `"npm test"`, `"go test ./..."`) --
+  this is run independently by the orchestrator itself in each subtask's
+  worktree, and its real exit code is what `TestResult.passed` comes from.
+  The Tester agent only writes the test code; it is never trusted to
+  self-report whether its own tests pass.
 
-Planner, implementer, tester, and reviewer are all `cursor-agent`, just
-pointed at different `--model` values per `config.yaml` -- the reviewer
-is enforced (at config load time) to use a different model than the
-implementer, so the "independent second opinion" is a structural
-guarantee, not a convention.
+Planner, plan critic, implementer, tester, and reviewer are all
+`cursor-agent`, just pointed at different `--model` values per
+`config.yaml`. Two of those five are enforced (at config load time) to
+differ from the role they're independently checking, so "independent
+second opinion" is a structural guarantee, not a convention:
+- `models.reviewer` must differ from `models.implementer`
+- `models.plan_critic` must differ from `models.planner`
+
+The plan critic runs right after planning and before the human
+scope-approval prompt -- it critiques the subtask decomposition itself
+(sizing, missing/unnecessary dependencies, prompt coverage, scope creep)
+and its findings are shown alongside the plan. It's advisory only: it has
+no verdict and can't block anything on its own, the same way the code
+reviewer's findings are a second opinion for the human merging the PR,
+not an automatic gate.
 
 ## Config
 
@@ -60,8 +76,14 @@ Every tunable and model name lives in `config.yaml`
 with the package, so it's found the same way whether you installed
 editable (`pipx install -e .`) or not. `config.py` validates it at load
 time -- in particular, `models.reviewer` must differ from
-`models.implementer`, since that's the whole point of an independent
-review.
+`models.implementer`, and `models.plan_critic` must differ from
+`models.planner`, since that's the whole point of an independent review.
+
+Every `cursor-agent`/`gh` subprocess call also has a hard timeout
+(`limits.cursor_agent_timeout_seconds`, `limits.gh_timeout_seconds`) --
+without one, a single hung process would hang the whole orchestrator
+forever. Raise these if you hit false-positive timeouts on legitimately
+slow tasks.
 
 To use your own settings without editing the installed copy, copy that
 file somewhere and pass `--config /path/to/your-config.yaml`.

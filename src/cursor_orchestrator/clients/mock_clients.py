@@ -5,6 +5,7 @@ from collections import defaultdict
 from cursor_orchestrator.clients.base import (
     CIStatus,
     CursorClientBase,
+    PlanCriticClientBase,
     PullRequest,
     ReviewComment,
     ReviewerClientBase,
@@ -12,6 +13,8 @@ from cursor_orchestrator.clients.base import (
 )
 from cursor_orchestrator.models import (
     Plan,
+    PlanCritique,
+    PlanCritiqueFinding,
     ReviewFinding,
     ReviewResult,
     SubTask,
@@ -153,4 +156,16 @@ class MockReviewerClient(ReviewerClientBase):
                 )
                 for r in subtask_results
             ],
+        )
+
+
+class MockPlanCriticClient(PlanCriticClientBase):
+    def critique(self, original_prompt: str, plan: Plan) -> PlanCritique:
+        return PlanCritique(
+            findings=[
+                PlanCritiqueFinding(
+                    severity="minor",
+                    message="[dry-run] plan-critique placeholder -- decomposition looks reasonable",
+                )
+            ]
         )

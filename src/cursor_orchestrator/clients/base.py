@@ -3,7 +3,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from cursor_orchestrator.models import Plan, ReviewResult, SubTask, SubTaskResult, TestResult
+from cursor_orchestrator.models import (
+    Plan,
+    PlanCritique,
+    ReviewResult,
+    SubTask,
+    SubTaskResult,
+    TestResult,
+)
 
 
 @dataclass
@@ -72,3 +79,8 @@ class ReviewerClientBase(ABC):
     def review(
         self, original_prompt: str, plan_summary: str, subtask_results: list[SubTaskResult]
     ) -> ReviewResult: ...
+
+
+class PlanCriticClientBase(ABC):
+    @abstractmethod
+    def critique(self, original_prompt: str, plan: Plan) -> PlanCritique: ...

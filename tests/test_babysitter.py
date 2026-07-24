@@ -6,7 +6,13 @@ import pytest
 from cursor_orchestrator.babysitter import Babysitter
 from cursor_orchestrator.branch_manager import BranchManager
 from cursor_orchestrator.clients.base import CIStatus, CursorClientBase, PullRequest, ReviewComment
-from cursor_orchestrator.config import GitConfig, LimitsConfig, ModelsConfig, OrchestratorConfig
+from cursor_orchestrator.config import (
+    GitConfig,
+    LimitsConfig,
+    ModelsConfig,
+    OrchestratorConfig,
+    TestingConfig as OrchestratorTestingConfig,
+)
 from cursor_orchestrator.models import TestResult as SubtaskTestResult
 
 
@@ -17,12 +23,15 @@ def _config(**limit_overrides) -> OrchestratorConfig:
         max_babysit_iterations=5,
         max_babysit_wall_clock_minutes=60,
         babysit_poll_interval_seconds=0.01,
+        cursor_agent_timeout_seconds=60,
+        gh_timeout_seconds=30,
     )
     limits.update(limit_overrides)
     return OrchestratorConfig(
-        models=ModelsConfig(planner="p", implementer="i", tester="t", reviewer="r"),
+        models=ModelsConfig(planner="p", plan_critic="c", implementer="i", tester="t", reviewer="r"),
         limits=LimitsConfig(**limits),
         git=GitConfig(base_branch="main", pr_backend="gh"),
+        testing=OrchestratorTestingConfig(command="true", timeout_seconds=30),
     )
 
 
