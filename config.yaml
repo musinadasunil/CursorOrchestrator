@@ -16,3 +16,9 @@ limits:
 
 git:
   base_branch: "main"
+  # "gh": PR create/status/comments go through the `gh` CLI (needs `gh auth
+  #       login`). "api": same operations go straight to GitHub's REST API
+  #       over HTTPS instead -- no `gh` CLI needed, but requires a
+  #       GITHUB_TOKEN (or GH_TOKEN) env var with repo/PR scope. Use "api"
+  #       if `gh` isn't installable/allowed on this machine.
+  pr_backend: "gh"

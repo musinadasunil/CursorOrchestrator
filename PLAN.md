@@ -196,12 +196,30 @@ each constructed with that role's configured `--model`. The reviewer is
 just another `cursor-agent` call pointed at a different model than the
 implementer (`config.py` enforces `models.reviewer != models.implementer`
 at load time, so "independent second opinion" is structural, not
-convention). PR lifecycle and CI status go through the `gh` CLI instead,
-since that's a hosting-provider concern, not an agent concern.
+convention). PR lifecycle and CI status go through the `gh` CLI by
+default, since that's a hosting-provider concern, not an agent concern.
 **Verify against your installed `cursor-agent --help` / current Cursor
 docs before relying on this** — exact flags and the API surface have been
 changing release to release; treat the flags in this file as a starting
 point, not gospel.
+
+### `clients/github_api_client.py`
+Drop-in alternative to `gh` for the PR-lifecycle methods only
+(`create_pr`, `get_pr_status`, `get_pr_review_comments`) — for machines
+where the `gh` CLI itself isn't allowed (org policy, locked-down build
+box, etc.) but direct HTTPS to GitHub's REST API is fine. Selected via
+`config.yaml`'s `git.pr_backend: "api"` (default is `"gh"`). It wraps a
+`CursorCliClient` by composition and delegates `plan`/`implement_subtask`/
+`get_branch_head_sha`/`push_fix_commit` straight through unchanged (the
+last two are already plain `git` subprocess calls with no `gh`
+involved) — only the actual GitHub-hosting operations are reimplemented,
+against the REST API, using stdlib `urllib` (no new dependency). Needs a
+`GITHUB_TOKEN` (or `GH_TOKEN`) env var; owner/repo and the API host
+(`api.github.com` vs. a GitHub Enterprise `/api/v3` path) are
+auto-detected from the repo's `origin` remote, not configured by hand.
+Reads CI state from the Checks API only — if your CI posts exclusively to
+the older classic commit-status API instead of GitHub Checks, this won't
+see it.
 
 ### `clients/mock_clients.py`
 Fully working fakes with no network calls — used to unit-test the

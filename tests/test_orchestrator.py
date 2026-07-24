@@ -19,7 +19,7 @@ def _config(**limit_overrides) -> OrchestratorConfig:
     return OrchestratorConfig(
         models=ModelsConfig(planner="p", implementer="i", tester="t", reviewer="r"),
         limits=LimitsConfig(**limits),
-        git=GitConfig(base_branch="main"),
+        git=GitConfig(base_branch="main", pr_backend="gh"),
     )
 
 

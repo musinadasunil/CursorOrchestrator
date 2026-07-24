@@ -38,7 +38,14 @@ A real (non-dry-run) run needs:
 - the `cursor-agent` CLI installed and authenticated (verify its flags
   against your installed version -- see the note in
   `src/cursor_orchestrator/clients/cursor_cli_client.py`)
-- the GitHub `gh` CLI installed and authenticated (`gh auth login`)
+- a way to talk to GitHub for PR/CI operations -- either the `gh` CLI
+  (`gh auth login`), or, if `gh` isn't installable/allowed on this
+  machine, GitHub's REST API directly over HTTPS. Set `git.pr_backend` in
+  `config.yaml` to `"gh"` (default) or `"api"`. The `"api"` backend needs
+  no CLI at all, just a `GITHUB_TOKEN` (or `GH_TOKEN`) environment
+  variable with repo/PR scope -- owner/repo and the API host are
+  auto-detected from the repo's `origin` remote (GitHub.com and GitHub
+  Enterprise both work).
 
 Planner, implementer, tester, and reviewer are all `cursor-agent`, just
 pointed at different `--model` values per `config.yaml` -- the reviewer

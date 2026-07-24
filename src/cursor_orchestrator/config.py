@@ -32,6 +32,7 @@ class LimitsConfig:
 @dataclass(frozen=True)
 class GitConfig:
     base_branch: str
+    pr_backend: str  # "gh" | "api" -- see config.yaml's comment
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,10 @@ class OrchestratorConfig:
             raise ConfigError("limits.max_babysit_wall_clock_minutes must be >= 1")
         if self.limits.babysit_poll_interval_seconds <= 0:
             raise ConfigError("limits.babysit_poll_interval_seconds must be > 0")
+        if self.git.pr_backend not in ("gh", "api"):
+            raise ConfigError(
+                f"git.pr_backend must be 'gh' or 'api', got {self.git.pr_backend!r}"
+            )
 
 
 def _section(raw: dict, name: str) -> dict:

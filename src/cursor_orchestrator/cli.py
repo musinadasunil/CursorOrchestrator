@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from cursor_orchestrator.clients.cursor_cli_client import CursorCliClient
+from cursor_orchestrator.clients.github_api_client import GithubApiClient, GithubApiError
 from cursor_orchestrator.clients.mock_clients import (
     MockCursorClient,
     MockReviewerClient,
@@ -29,7 +30,15 @@ def main(argv: list[str] | None = None) -> int:
         reviewer_client = MockReviewerClient()
     else:
         planner_client = CursorCliClient(model=config.models.planner)
-        cursor_client = CursorCliClient(model=config.models.implementer)
+        implementer_agent = CursorCliClient(model=config.models.implementer)
+        if config.git.pr_backend == "api":
+            try:
+                cursor_client = GithubApiClient(agent_client=implementer_agent, repo_path=args.repo)
+            except GithubApiError as e:
+                print(f"github api client error: {e}", file=sys.stderr)
+                return 1
+        else:
+            cursor_client = implementer_agent
         test_client = CursorCliClient(model=config.models.tester)
         reviewer_client = CursorCliClient(model=config.models.reviewer)
 
