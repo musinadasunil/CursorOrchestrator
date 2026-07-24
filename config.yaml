@@ -1,0 +1,15 @@
+models:
+  planner: "cursor-default"
+  implementer: "cursor-default"
+  tester: "cursor-default"
+  reviewer: "claude-sonnet-5" # must differ from implementer -- enforced at load time
+
+limits:
+  max_parallel_agents: 3
+  max_review_iterations: 3
+  max_babysit_iterations: 10
+  max_babysit_wall_clock_minutes: 120
+  babysit_poll_interval_seconds: 30
+
+git:
+  base_branch: "main"
