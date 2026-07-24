@@ -128,6 +128,8 @@ class Orchestrator:
             outcome = Babysitter(
                 self.config,
                 self.cursor_client,
+                test_client=self.test_client,
+                branch_manager=branch_manager,
                 human_gate=self.human_gate,
                 poll_interval_seconds=babysit_poll_interval,
             ).babysit(pr, prompt)

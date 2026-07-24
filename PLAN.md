@@ -115,6 +115,16 @@ prompt
   │
   ▼
 [7] BABYSIT PR  ← polling loop, runs until terminal state or human takes over
+  - poll whether the base branch has moved since the feature branch was
+    created (local ref only — see risk notes on remote drift)
+  - on base-branch drift: merge it into the feature branch immediately
+    (never rebase — see risk notes on why), then re-run the Tester agent
+    locally before pushing
+      - merge conflict → hard stop, escalate, never auto-resolve (same
+        policy as the group-boundary merges in step [4])
+      - merge succeeds, tests still pass → push the merge commit directly
+      - merge succeeds, tests now fail → route to the implementer as a fix,
+        same as a CI failure below, then push
   - poll CI status on the feature branch
   - poll human review comments / change-requests on the PR
   - on CI failure:
@@ -209,12 +219,27 @@ ran `pytest` against before handing this over.
 ### `babysitter.py`
 Owns step [7]. A polling loop (own iteration *and* wall-clock cap,
 separate from the implementer↔tester↔reviewer cap in step [5]) that
-watches CI status and human review comments on the opened PR, maps a CI
-failure or a change-request comment onto the owning `SubTask`, and
-re-enters the implementer for a targeted fix — never a full re-plan,
-never a merge. Escalates to the human (PR comment + CLI notification) on
-ambiguous input, a repeated failure of the same check, or cap
-exhaustion, rather than retrying blindly.
+watches CI status and human review comments on the opened PR, and
+re-enters the implementer for a fix — never a full re-plan. There's only
+one branch/PR (see branch_manager.py), so a fix isn't attributed back to
+a specific original `SubTask`; the implementer is just asked to fix the
+branch generically, with the original prompt as context.
+
+It also watches the base branch: baseline is the base branch's SHA at the
+moment the feature branch was created (`BranchManager.
+base_branch_sha_at_creation`), not "whatever it is when babysitting
+starts" — so drift picked up on the very first poll also covers anything
+that landed on the base branch during the build/review phase, not only
+drift that happens while actively babysitting. On drift, it merges the
+base branch into the feature branch (never rebases — see risk notes),
+hard-stops and escalates on conflict exactly like the group-boundary
+merges in step [4], and otherwise re-runs the Tester agent on the merge
+result before pushing, so a "clean" base branch merge can't silently
+reintroduce a break that no individual subtask's tests would have caught.
+
+Escalates to the human (PR comment + CLI notification) on ambiguous
+input, a repeated failure of the same check, cap exhaustion, or a base
+merge conflict, rather than retrying or auto-resolving blindly.
 
 ### `pr_template.md`
 Filled at step [6]: prompt, plan, per-subtask rationale, reviewer findings
@@ -274,3 +299,18 @@ touching Cursor at all.
   of endless retries on a flaky check, and must never touch anything the
   human has since pushed to the branch by hand (detect via HEAD SHA
   check, back off, don't overwrite).
+- **Base-branch drift is merged in, never rebased.** A rebase rewrites the
+  feature branch's SHAs and requires a force-push to update the remote PR
+  branch — which both defeats the HEAD-SHA-based manual-push detection
+  above (the babysitter couldn't tell its own rebase apart from a human's
+  push using that same check) and risks silently rewriting history under
+  a human who has the PR branch checked out locally to review it. Merge
+  achieves the same goal (branch caught up, conflicts surfaced early)
+  without either problem, at the cost of a non-linear history.
+- **Base-drift detection is local-only — it does not `git fetch`.** It
+  compares the base branch's local ref, not `origin/<base_branch>`. If
+  nothing else keeps the local base branch up to date with the remote
+  (the human's own `git pull`, a cron, CI, etc.), drift landing only on
+  the remote will not be seen. This is a real gap, not a design choice —
+  worth closing if the orchestrator ever runs somewhere the local repo
+  isn't already kept in sync some other way.

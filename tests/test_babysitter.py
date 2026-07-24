@@ -1,8 +1,13 @@
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from cursor_orchestrator.babysitter import Babysitter
+from cursor_orchestrator.branch_manager import BranchManager
 from cursor_orchestrator.clients.base import CIStatus, CursorClientBase, PullRequest, ReviewComment
 from cursor_orchestrator.config import GitConfig, LimitsConfig, ModelsConfig, OrchestratorConfig
+from cursor_orchestrator.models import TestResult as SubtaskTestResult
 
 
 def _config(**limit_overrides) -> OrchestratorConfig:
@@ -19,6 +24,33 @@ def _config(**limit_overrides) -> OrchestratorConfig:
         limits=LimitsConfig(**limits),
         git=GitConfig(base_branch="main"),
     )
+
+
+def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _git("init", "-b", "main", cwd=repo_path)
+    _git("config", "user.email", "test@example.com", cwd=repo_path)
+    _git("config", "user.name", "Test", cwd=repo_path)
+    (repo_path / "README.md").write_text("initial\n")
+    _git("add", "-A", cwd=repo_path)
+    _git("commit", "-m", "initial commit", cwd=repo_path)
+    return repo_path
+
+
+class FakeTestClient:
+    def __init__(self, passed: bool = True):
+        self.passed = passed
+        self.calls = 0
+
+    def write_and_run_tests(self, subtask, worktree_path):
+        self.calls += 1
+        return SubtaskTestResult(subtask_id=subtask.id, passed=self.passed, details="fake test run")
 
 
 class FakeCursorClient(CursorClientBase):
@@ -119,3 +151,88 @@ def test_babysit_escalates_at_iteration_cap():
 
     outcome = Babysitter(config, client).babysit(pr, "original prompt")
     assert outcome == "escalated"
+
+
+def test_babysit_merges_clean_base_drift_and_retests_before_pushing(repo: Path):
+    bm = BranchManager(str(repo), base_branch="main", feature_branch="feature/drift")
+    bm.create_feature_branch()
+
+    # Simulate base branch drift: something lands on main after the
+    # feature branch (and its eventual PR) already exist.
+    _git("checkout", "main", cwd=repo)
+    (repo / "new_on_main.txt").write_text("landed on main after the PR opened\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "unrelated change on main", cwd=repo)
+    _git("checkout", "feature/drift", cwd=repo)
+
+    client = FakeCursorClient()
+    client.statuses = [CIStatus(state="success", failing_checks=[], logs={})]
+    client.comments = [[]]
+    test_client = FakeTestClient(passed=True)
+
+    pr = PullRequest(url="https://example.invalid/pr/drift", branch="feature/drift", head_sha="sha-0")
+    outcome = Babysitter(_config(), client, test_client=test_client, branch_manager=bm).babysit(
+        pr, "original prompt"
+    )
+
+    assert outcome == "clean"
+    assert test_client.calls == 1
+    assert client.push_count == 1  # merge pushed directly; tests passed, no implementer fix needed
+    assert (repo / "new_on_main.txt").exists()  # merge actually landed on the feature branch
+    bm.cleanup()
+
+
+def test_babysit_escalates_on_base_drift_merge_conflict(repo: Path):
+    bm = BranchManager(str(repo), base_branch="main", feature_branch="feature/conflict")
+    bm.create_feature_branch()
+    (repo / "README.md").write_text("changed on feature branch\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "feature branch edits README", cwd=repo)
+
+    # Conflicting edit lands on main after the feature branch diverged.
+    _git("checkout", "main", cwd=repo)
+    (repo / "README.md").write_text("changed on main, conflicting\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "main also edits README", cwd=repo)
+    _git("checkout", "feature/conflict", cwd=repo)
+
+    client = FakeCursorClient()  # no statuses queued -- CI must never be checked
+    test_client = FakeTestClient(passed=True)
+
+    pr = PullRequest(url="https://example.invalid/pr/conflict", branch="feature/conflict", head_sha="sha-0")
+    outcome = Babysitter(_config(), client, test_client=test_client, branch_manager=bm).babysit(
+        pr, "original prompt"
+    )
+
+    assert outcome == "escalated"
+    assert test_client.calls == 0  # never got past the conflict to re-test
+    assert client.push_count == 0  # never pushed anything
+    bm.cleanup()
+
+
+def test_babysit_fixes_via_implementer_when_base_drift_merge_breaks_tests(repo: Path):
+    bm = BranchManager(str(repo), base_branch="main", feature_branch="feature/drift-breaks")
+    bm.create_feature_branch()
+
+    _git("checkout", "main", cwd=repo)
+    (repo / "new_on_main.txt").write_text("landed on main\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-m", "unrelated change on main", cwd=repo)
+    _git("checkout", "feature/drift-breaks", cwd=repo)
+
+    client = FakeCursorClient()
+    client.statuses = [CIStatus(state="success", failing_checks=[], logs={})]
+    client.comments = [[]]
+    client.head_shas = ["sha-0"]  # matches pr.head_sha, so the fix's HEAD check passes
+    test_client = FakeTestClient(passed=False)  # merge "breaks" tests
+
+    pr = PullRequest(
+        url="https://example.invalid/pr/drift-breaks", branch="feature/drift-breaks", head_sha="sha-0"
+    )
+    outcome = Babysitter(_config(), client, test_client=test_client, branch_manager=bm).babysit(
+        pr, "original prompt"
+    )
+
+    assert outcome == "clean"
+    assert test_client.calls == 1
+    assert client.push_count == 1  # went through _push_fix's implementer path, then pushed
