@@ -5,6 +5,7 @@ from collections import defaultdict
 from cursor_orchestrator.clients.base import (
     CIStatus,
     CursorClientBase,
+    FeaturePlannerClientBase,
     PlanCriticClientBase,
     PullRequest,
     ReviewComment,
@@ -12,6 +13,8 @@ from cursor_orchestrator.clients.base import (
     TestClientBase,
 )
 from cursor_orchestrator.models import (
+    Feature,
+    FeaturePlan,
     Plan,
     PlanCritique,
     PlanCritiqueFinding,
@@ -19,6 +22,7 @@ from cursor_orchestrator.models import (
     ReviewResult,
     SubTask,
     SubTaskResult,
+    Task,
     TestResult,
     Verdict,
 )
@@ -38,6 +42,7 @@ class MockCursorClient(CursorClientBase):
         self._implement_calls: dict[str, int] = defaultdict(int)
         self._sha_counter = 0
         self._pr_status_calls = 0
+        self._merge_state_calls = 0
 
     def plan(self, prompt: str) -> Plan:
         return Plan(
@@ -93,6 +98,13 @@ class MockCursorClient(CursorClientBase):
 
     def get_pr_review_comments(self, pr: PullRequest) -> list[ReviewComment]:
         return []
+
+    def get_pr_merge_state(self, pr: PullRequest) -> str:
+        # Simulates "open" on the first poll, "merged" after -- so dry-run
+        # actually walks campaign.py's merge-wait loop at least once
+        # instead of resolving instantly.
+        self._merge_state_calls += 1
+        return "open" if self._merge_state_calls == 1 else "merged"
 
     def get_branch_head_sha(self, branch: str) -> str:
         return f"dryrun-sha-{self._sha_counter}"
@@ -168,4 +180,35 @@ class MockPlanCriticClient(PlanCriticClientBase):
                     message="[dry-run] plan-critique placeholder -- decomposition looks reasonable",
                 )
             ]
+        )
+
+
+class MockFeaturePlannerClient(FeaturePlannerClientBase):
+    """Canned 2-feature/3-task plan -- one feature with a dependent pair
+    of tasks, one feature with a single independent task -- so --sequential
+    --dry-run actually exercises real cross-feature sequencing, not just a
+    single task."""
+
+    def plan_features(self, architecture_prompt: str) -> FeaturePlan:
+        return FeaturePlan(
+            summary=f"[dry-run] feature plan for: {architecture_prompt}",
+            features=[
+                Feature(
+                    id="feature-1",
+                    description="[dry-run] first feature",
+                    tasks=[
+                        Task(id="feature-1-a", description="[dry-run] first feature, task a"),
+                        Task(
+                            id="feature-1-b",
+                            description="[dry-run] first feature, task b",
+                            depends_on=["feature-1-a"],
+                        ),
+                    ],
+                ),
+                Feature(
+                    id="feature-2",
+                    description="[dry-run] second feature",
+                    tasks=[Task(id="feature-2-a", description="[dry-run] second feature, task a")],
+                ),
+            ],
         )

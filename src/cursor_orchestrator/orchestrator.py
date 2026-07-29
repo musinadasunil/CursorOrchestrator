@@ -12,7 +12,14 @@ from cursor_orchestrator.clients.base import (
     TestClientBase,
 )
 from cursor_orchestrator.config import OrchestratorConfig
-from cursor_orchestrator.models import Plan, PlanCritique, ReviewResult, SubTaskResult, Verdict
+from cursor_orchestrator.models import (
+    FeaturePlan,
+    Plan,
+    PlanCritique,
+    ReviewResult,
+    SubTaskResult,
+    Verdict,
+)
 
 
 class HumanGate:
@@ -36,6 +43,29 @@ class HumanGate:
                 print(f"  [{f.severity}] {f.message}")
         while True:
             choice = input("\nApprove this plan? [a]pprove / [e]dit / [x] abort: ").strip().lower()
+            if choice in ("a", "approve"):
+                return "approve", ""
+            if choice in ("e", "edit"):
+                return "edit", input("Describe the changes you want: ").strip()
+            if choice in ("x", "abort"):
+                return "abort", ""
+            print("Please enter a, e, or x.")
+
+    def approve_feature_plan(self, feature_plan: FeaturePlan) -> tuple[str, str]:
+        """Returns (decision, feedback); decision in {"approve","edit","abort"}.
+        Same shape as approve_scope, one tier up -- gates campaign.py's
+        feature/task breakdown before any branch is created, exactly
+        once per whole architecture (not per task)."""
+        print("\n=== FEATURE PLAN ===")
+        print(feature_plan.summary)
+        for feature in feature_plan.features:
+            print(f"\n[{feature.id}] {feature.description}")
+            for task in feature.tasks:
+                print(f"  - [{task.id}] {task.description} (depends_on={task.depends_on})")
+        while True:
+            choice = input(
+                "\nApprove this feature/task breakdown? [a]pprove / [e]dit / [x] abort: "
+            ).strip().lower()
             if choice in ("a", "approve"):
                 return "approve", ""
             if choice in ("e", "edit"):
@@ -75,6 +105,7 @@ class OrchestratorResult:
     pr_url: str | None
     aborted: bool = False
     took_over: bool = False
+    babysit_outcome: str | None = None  # "clean" | "escalated", set once a PR is opened
 
 
 class Orchestrator:
@@ -107,12 +138,12 @@ class Orchestrator:
         self.dry_run = dry_run
         self.repo_path = repo_path
 
-    def run(self, prompt: str) -> OrchestratorResult:
+    def run(self, prompt: str, branch_name: str | None = None) -> OrchestratorResult:
         plan = self._plan_with_approval(prompt)
         if plan is None:
             return OrchestratorResult(pr_url=None, aborted=True)
 
-        feature_branch = f"orchestrator/{_slugify(prompt)}"
+        feature_branch = branch_name or f"orchestrator/{_slugify(prompt)}"
         branch_manager = (
             NullBranchManager(self.config.git.base_branch, feature_branch)
             if self.dry_run
@@ -148,7 +179,7 @@ class Orchestrator:
             ).babysit(pr, prompt)
             print(f"=== BABYSITTING DONE: {outcome} ===")
 
-            return OrchestratorResult(pr_url=pr.url)
+            return OrchestratorResult(pr_url=pr.url, babysit_outcome=outcome)
         finally:
             branch_manager.cleanup()
 

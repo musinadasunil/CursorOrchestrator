@@ -19,6 +19,50 @@ check-in. Once accepted, it opens a PR — never auto-merges — and then keeps
 back through the implementer, until the PR is green and addressed. A human
 is always the final approver and the only one who merges.
 
+## Sequential campaigns: an entire architecture, not just one prompt
+
+Everything in Flow below is what happens for **one** task/prompt, ending
+in one PR. `campaign.py` adds an optional tier *above* that flow, for
+when the input is an entire architecture rather than one scoped change:
+
+```
+architecture description
+  │
+  ▼
+[0a] FEATURE PLANNER (same model/role as the planner, coarser grained)
+  → FeaturePlan { summary, features[] }
+  each feature: id, description, tasks[] (id, description, depends_on[])
+  each task is sized so its eventual PR stays reviewable by one person —
+  it becomes exactly one branch and one PR, built via the normal
+  Flow below, unmodified
+  │
+  ▼
+[0b] HUMAN FEATURE-PLAN APPROVAL ← blocking gate (approve / edit / abort)
+  once per whole architecture, not per task
+  │
+  ▼
+for each task, in dependency order (ties broken by declared order):
+  [0c] sync the local base branch to origin (fetch + fast-forward-only;
+       a non-fast-forward is a hard stop, same policy as every other
+       merge in this system)
+  [0d] run this ONE task's description through the normal Flow ([1]-[7]
+       below), unmodified — its own plan, its own plan critique, its own
+       human scope-approval gate, its own build/review/PR/babysit
+  [0e] once babysit reaches "clean" (CI green, no open comments), WAIT —
+       poll until a human actually merges the PR (not just until CI is
+       clean, which is as far as a normal single-task run waits).
+       Unbounded by design (see risk notes) but interruptible: progress
+       is persisted to a state file after every step, so killing the
+       process and re-running the same command resumes instead of
+       re-planning or rebuilding already-merged tasks.
+  [0f] on the build reaching an aborted/took-over/escalated state, or the
+       PR being closed without merging: halt the whole campaign and print
+       which task needs a human, rather than guessing how to proceed
+```
+
+A normal single-prompt run (no `--sequential`) never touches any of this
+— `campaign.py` is purely additive.
+
 ## Explicit non-goals
 
 - No auto-merge. Ever. The reviewer's verdict gates the *revision loop*, not
@@ -174,6 +218,14 @@ without anyone noticing), `TestResult`, `ReviewFinding`, `ReviewResult`,
 `PlanCritiqueFinding`, `PlanCritique` (advisory-only, no verdict field —
 see step [1b] in Flow).
 
+One tier above that: `Task`, `Feature`, `FeaturePlan` (with
+`ordered_tasks()` — same duplicate-id/unknown-dependency/cycle validation
+as `Plan.parallel_groups()`, but flattens to a single strict sequential
+order instead of parallel batches, since `campaign.py` always builds one
+task at a time). A `Task` here is a different, coarser thing than a
+`SubTask` — it becomes one branch and one PR, and is itself handed to
+the normal `Plan`/`SubTask` machinery once its turn comes up.
+
 ### `prompts.py`
 - **Planner system prompt** — instructs decomposition into subtasks with
   explicit `depends_on` edges. Dependency ordering alone determines
@@ -192,14 +244,27 @@ see step [1b] in Flow).
   the diff *blind first* (before seeing implementer rationale) to avoid
   anchoring, then reconcile. Forced to output severity-labeled findings,
   never a bare "approved."
+- **Feature planner system prompt** — decomposes an entire architecture
+  description into features and tasks, explicitly sized so a single
+  task's eventual PR "stays reviewable by one person in one sitting" —
+  the same framing used to explain "substantial" to the human who asked
+  for this. Same model/role as the planner (`config.models.planner`),
+  just a coarser-grained pass; not a separately configured model.
 
 ### `clients/base.py`
 Abstract interfaces: `CursorClientBase.plan()`, `.implement_subtask()`,
 `.create_pr()`, `.get_pr_status()`, `.get_pr_review_comments()`,
-`.push_fix_commit()`; `TestClientBase.write_and_run_tests()`;
-`ReviewerClientBase.review()`; `PlanCriticClientBase.critique()`.
-Everything else in the system talks to these interfaces, not to a
-specific SDK — swap implementations without touching orchestrator logic.
+`.push_fix_commit()`, `.get_pr_merge_state()`; `TestClientBase
+.write_and_run_tests()`; `ReviewerClientBase.review()`;
+`PlanCriticClientBase.critique()`; `FeaturePlannerClientBase
+.plan_features()`. Everything else in the system talks to these
+interfaces, not to a specific SDK — swap implementations without
+touching orchestrator logic.
+
+`get_pr_merge_state()` returns `"open" | "merged" | "closed"` — used
+only by `campaign.py`'s merge-wait, since nothing else needs to know
+whether a PR has actually been merged (a normal single-task run stops
+once CI is clean; it never asks this).
 
 ### `branch_manager.py`
 Owns the single feature branch's lifecycle: creates it, opens/tears down
@@ -208,6 +273,16 @@ into the feature branch sequentially once its group completes, and hard
 stops (no auto-resolve) on merge conflict. This is the piece that makes
 "one branch, dependency-ordered groups" real instead of aspirational —
 without it, "parallel worktrees merging into one branch" is just prose.
+A subtask redone after a revision request reuses its worktree branch
+name, so `create_worktree` force-resets it (`git worktree add -B`, not
+`-b`) rather than failing on "branch already exists" — `remove_worktree`
+only removes the worktree, not the branch itself.
+
+Also exports a module-level `sync_base_branch(repo_path, base_branch)`
+(not a `BranchManager` method — no worktree-root tempdir needed just to
+sync a branch), used only by `campaign.py` between sequential tasks:
+fetch + fast-forward-only merge, hard stop (never a 3-way auto-merge) if
+local history has diverged unexpectedly.
 
 ### `clients/cursor_cli_client.py`
 Real implementation via subprocess calls to the `cursor-agent` CLI — plan,
@@ -299,10 +374,34 @@ merge conflict, rather than retrying or auto-resolving blindly.
 Filled at step [6]: prompt, plan, per-subtask rationale, reviewer findings
 (explicitly labeled as a second opinion to verify, not fact), test results.
 
+### `campaign.py`
+Owns the sequential-campaign tier described above. `CampaignState` is a
+small JSON-serializable record (the architecture prompt, the approved
+`FeaturePlan`, and each task's status/PR URL/branch) — `CampaignRunner`
+loads it if the state file already exists (resuming: skip feature
+planning and every already-`merged` task) or creates it fresh after the
+human approves the feature plan. For each remaining task it builds a
+plain `orchestrator.py` `Orchestrator` (identical role clients every
+time) scoped to just that task's description, then, once that task's PR
+is CI-clean, polls `get_pr_merge_state()` until a human actually merges
+it. Halts the whole campaign — rather than guessing how to recover — on
+an aborted/taken-over/escalated task, a PR closed without merging, or a
+`KeyboardInterrupt` during the merge-wait (printing a clear "re-run to
+resume" message in the last case, since state is persisted after every
+step). Adds nothing to the plan/build/review/PR logic itself; a normal
+single-prompt run never imports this module.
+
 ### `cli.py`
 Entry point: `python cli.py "build a feature that..."` — wires real clients
 together, or `--dry-run` to use the mocks and walk the flow without
-touching Cursor at all.
+touching Cursor at all. The prompt can come from a `--prompt-file` (read
+and stripped) instead of the positional argument — the two are mutually
+exclusive, exactly one required. `--sequential` switches from a single
+`Orchestrator` run to a `CampaignRunner` run over the same role clients;
+`--state-file` overrides where that campaign's progress is persisted
+(default: derived from the repo path and prompt, under
+`~/.cursor-orchestrator/campaigns/`, deliberately outside the target
+repo so nothing needs gitignoring).
 
 ---
 
@@ -366,4 +465,26 @@ touching Cursor at all.
   (the human's own `git pull`, a cron, CI, etc.), drift landing only on
   the remote will not be seen. This is a real gap, not a design choice —
   worth closing if the orchestrator ever runs somewhere the local repo
-  isn't already kept in sync some other way.
+  isn't already kept in sync some other way. Note this is only about
+  babysitting a *single* task's PR (step [7]) — `campaign.py`'s
+  between-task `sync_base_branch()` does fetch, since it has to pick up
+  the just-merged previous task before branching for the next one.
+- **The feature/task breakdown ([0a]/[0b] above) does not get the plan
+  critic's independent second opinion.** Each *task's own* subtask plan
+  still does (step [1b] runs per task, unchanged), but the higher-tier
+  decomposition itself — how many features, how a task is scoped, where
+  the dependency edges are — currently only gets the human's read at
+  [0b]. Extending `PlanCriticClientBase` to this tier is a real option
+  later; it just isn't built yet.
+- **The merge-wait ([0e] above) is intentionally unbounded** — no
+  iteration/wall-clock cap like babysitting has, because there's no
+  failure mode to escalate on, only a human action (merging the PR) to
+  wait for. This only works in practice because progress is persisted to
+  the state file after every step: the wait is meant to be killed and
+  resumed (laptop sleeps, terminal closes, days pass), not sat through in
+  one uninterrupted process run.
+- **A campaign halts, it doesn't self-heal, on anything unexpected** — an
+  aborted/taken-over/escalated task, or a PR closed without merging, all
+  stop the whole sequence rather than attempting a workaround. This is
+  the same "hard stop, escalate to a human" philosophy as everywhere else
+  in this system, just applied one tier up.

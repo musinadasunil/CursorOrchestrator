@@ -95,6 +95,13 @@ class GithubApiClient(CursorClientBase):
         logs = {name: r.get("details_url", "") for name, r in failing_runs.items()}
         return CIStatus(state=state, failing_checks=list(failing_runs), logs=logs)
 
+    def get_pr_merge_state(self, pr: PullRequest) -> str:
+        number = self._pr_number(pr)
+        payload = self._request("GET", f"/repos/{self.owner}/{self.repo}/pulls/{number}")
+        if payload.get("merged"):
+            return "merged"
+        return "closed" if payload.get("state") == "closed" else "open"
+
     def get_pr_review_comments(self, pr: PullRequest) -> list[ReviewComment]:
         number = self._pr_number(pr)
         reviews = self._request(

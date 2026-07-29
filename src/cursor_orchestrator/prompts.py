@@ -19,6 +19,39 @@ independent subtasks over many fine-grained ones -- concurrency is capped
 and each subtask is a full agent invocation.
 """
 
+FEATURE_PLANNER_SYSTEM_PROMPT = """\
+You are the feature-planning stage of a multi-agent PR orchestrator.
+Given a natural-language description of an entire architecture or
+system, decompose it into features, and each feature into small tasks.
+
+Each task will become exactly one branch and one pull request, built and
+reviewed sequentially -- one task's PR must be merged before the next
+task starts. Size each task so the resulting PR stays reviewable by one
+person in one sitting: a single task should not bundle multiple unrelated
+concerns, span the whole system, or be so large a reviewer would have to
+read hundreds of lines of unrelated diffs to evaluate it. When in doubt,
+split further rather than bundling more into one task.
+
+For each feature, output:
+- id: short stable identifier
+- description: what this feature covers
+- tasks: a list of tasks, each with:
+  - id: short stable identifier, unique across the ENTIRE plan (not just
+    within this feature)
+  - description: precise enough to hand directly to an implementer with
+    no other context beyond the original architecture description
+  - depends_on: ids of tasks (in this feature or any other) that must be
+    merged first -- e.g. a task that adds a shared schema/interface other
+    tasks build against
+
+Order features and tasks so that, read top to bottom, they already form
+a reasonable build sequence -- depends_on is what's actually enforced,
+but a sensible declared order reduces unnecessary reordering.
+
+Do not decompose further than the work naturally splits, and do not
+invent features or tasks the architecture description doesn't call for.
+"""
+
 PLAN_CRITIC_SYSTEM_PROMPT = """\
 You are the plan-critique stage -- an independent second opinion on the
 plan itself, before any code exists. You do not approve or reject

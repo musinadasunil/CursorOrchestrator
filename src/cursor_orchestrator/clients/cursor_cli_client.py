@@ -6,6 +6,7 @@ import subprocess
 from cursor_orchestrator.clients.base import (
     CIStatus,
     CursorClientBase,
+    FeaturePlannerClientBase,
     PlanCriticClientBase,
     PullRequest,
     ReviewComment,
@@ -13,6 +14,8 @@ from cursor_orchestrator.clients.base import (
     TestClientBase,
 )
 from cursor_orchestrator.models import (
+    Feature,
+    FeaturePlan,
     Plan,
     PlanCritique,
     PlanCritiqueFinding,
@@ -20,10 +23,15 @@ from cursor_orchestrator.models import (
     ReviewResult,
     SubTask,
     SubTaskResult,
+    Task,
     TestResult,
     Verdict,
 )
-from cursor_orchestrator.prompts import PLAN_CRITIC_SYSTEM_PROMPT, REVIEWER_SYSTEM_PROMPT
+from cursor_orchestrator.prompts import (
+    FEATURE_PLANNER_SYSTEM_PROMPT,
+    PLAN_CRITIC_SYSTEM_PROMPT,
+    REVIEWER_SYSTEM_PROMPT,
+)
 
 # NOTE (see PLAN.md "Honest risk notes"): the cursor-agent CLI surface is a
 # moving target. Every subprocess call below is a starting point, not
@@ -65,8 +73,28 @@ Respond with ONLY a JSON object of this exact shape, no prose outside it:
 }
 """
 
+_FEATURE_PLAN_SCHEMA_HINT = """\
+Respond with ONLY a JSON object of this exact shape, no prose outside it:
+{
+  "summary": "...",
+  "features": [
+    {
+      "id": "...",
+      "description": "...",
+      "tasks": [{"id": "...", "description": "...", "depends_on": ["..."]}]
+    }
+  ]
+}
+"""
 
-class CursorCliClient(CursorClientBase, TestClientBase, ReviewerClientBase, PlanCriticClientBase):
+
+class CursorCliClient(
+    CursorClientBase,
+    TestClientBase,
+    ReviewerClientBase,
+    PlanCriticClientBase,
+    FeaturePlannerClientBase,
+):
     """Real implementation via subprocess calls to `cursor-agent` (plan,
     critique, implement, test, and review) and `gh` (PR lifecycle + CI
     status). One instance is constructed per role (planner/plan_critic/
@@ -112,6 +140,31 @@ class CursorCliClient(CursorClientBase, TestClientBase, ReviewerClientBase, Plan
                     depends_on=s.get("depends_on", []),
                 )
                 for s in payload["subtasks"]
+            ],
+        )
+
+    def plan_features(self, architecture_prompt: str) -> FeaturePlan:
+        prompt = f"{FEATURE_PLANNER_SYSTEM_PROMPT}\n\n{_FEATURE_PLAN_SCHEMA_HINT}"
+        result = self._run_cursor_agent(
+            ["--mode", "plan", "--model", self.model], stdin_input=f"{prompt}\n\n{architecture_prompt}"
+        )
+        payload = self._parse_json(result.stdout, "feature planning")
+        return FeaturePlan(
+            summary=payload["summary"],
+            features=[
+                Feature(
+                    id=f["id"],
+                    description=f["description"],
+                    tasks=[
+                        Task(
+                            id=t["id"],
+                            description=t["description"],
+                            depends_on=t.get("depends_on", []),
+                        )
+                        for t in f["tasks"]
+                    ],
+                )
+                for f in payload["features"]
             ],
         )
 
@@ -281,6 +334,14 @@ class CursorCliClient(CursorClientBase, TestClientBase, ReviewerClientBase, Plan
             for i, r in enumerate(reviews)
             if r.get("state") == "CHANGES_REQUESTED" and r.get("body")
         ]
+
+    def get_pr_merge_state(self, pr: PullRequest) -> str:
+        result = self._run_gh(["pr", "view", pr.branch, "--json", "state,mergedAt"])
+        payload = self._parse_json(result.stdout, "reading PR merge state")
+        if payload.get("mergedAt"):
+            return "merged"
+        state = payload.get("state", "OPEN").lower()
+        return "closed" if state == "closed" else "open"
 
     def get_branch_head_sha(self, branch: str) -> str:
         result = subprocess.run(

@@ -25,6 +25,7 @@ def _config(**limit_overrides) -> OrchestratorConfig:
         babysit_poll_interval_seconds=0.01,
         cursor_agent_timeout_seconds=60,
         gh_timeout_seconds=30,
+        merge_poll_interval_seconds=0.01,
     )
     limits.update(limit_overrides)
     return OrchestratorConfig(
@@ -83,6 +84,9 @@ class FakeCursorClient(CursorClientBase):
 
     def get_pr_review_comments(self, pr):
         return self.comments.pop(0) if self.comments else []
+
+    def get_pr_merge_state(self, pr):
+        raise NotImplementedError
 
     def get_branch_head_sha(self, branch):
         return self.head_shas.pop(0)

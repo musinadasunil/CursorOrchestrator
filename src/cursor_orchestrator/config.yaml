@@ -22,6 +22,12 @@ limits:
   # return in seconds.
   cursor_agent_timeout_seconds: 600
   gh_timeout_seconds: 30
+  # Only used by --sequential campaigns (campaign.py): how often to poll
+  # whether a task's PR has actually been merged before starting the next
+  # task. Unlike the caps above, there's no matching iteration/wall-clock
+  # cap here -- waiting for a human to merge is the whole point, not a
+  # failure mode to time out on.
+  merge_poll_interval_seconds: 60
 
 git:
   base_branch: "main"

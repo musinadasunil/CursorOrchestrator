@@ -47,7 +47,13 @@ class BranchManager:
     def create_worktree(self, subtask_id: str) -> Worktree:
         branch = f"{self.feature_branch}-{subtask_id}"
         path = self._worktree_root / subtask_id
-        self._run(["git", "worktree", "add", "-b", branch, str(path), self.feature_branch])
+        # -B (not -b): a subtask sent back for revision reuses the same
+        # subtask_id, but remove_worktree() below only removes the
+        # worktree, not the branch it pointed to -- -b would fail with
+        # "branch already exists" on the second attempt. -B resets it to
+        # start fresh from the feature branch's current HEAD every time,
+        # which is exactly what a redo should do.
+        self._run(["git", "worktree", "add", "-B", branch, str(path), self.feature_branch])
         worktree = Worktree(subtask_id=subtask_id, path=str(path), branch=branch)
         self._worktrees[subtask_id] = worktree
         return worktree
@@ -132,6 +138,36 @@ class BranchManager:
         if result.returncode != 0:
             raise BranchManagerError(f"command failed: {' '.join(cmd)}\n{result.stdout}\n{result.stderr}")
         return result
+
+
+def sync_base_branch(repo_path: str, base_branch: str) -> None:
+    """Fetches and fast-forwards the local base branch to match origin --
+    used by campaign.py between sequential tasks, since a task's PR being
+    merged on GitHub doesn't update the local checkout on its own. A
+    fast-forward-only merge is used deliberately: there's nothing to
+    3-way-merge if origin is simply ahead, and if it's NOT a fast-forward
+    (something diverged local history unexpectedly), that's a hard stop
+    for a human to look at, same policy as every other merge in this
+    file -- never auto-resolved.
+    """
+    subprocess.run(
+        ["git", "fetch", "origin", base_branch], cwd=repo_path, capture_output=True, text=True
+    )
+    subprocess.run(
+        ["git", "checkout", base_branch], cwd=repo_path, capture_output=True, text=True, check=True
+    )
+    result = subprocess.run(
+        ["git", "merge", "--ff-only", f"origin/{base_branch}"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise BranchManagerError(
+            f"couldn't fast-forward {base_branch!r} to origin/{base_branch!r} -- "
+            f"local history has diverged unexpectedly and needs a human to look at, "
+            f"not an auto-resolve:\n{result.stdout}\n{result.stderr}"
+        )
 
 
 class NullBranchManager:

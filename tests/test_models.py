@@ -1,6 +1,6 @@
 import pytest
 
-from cursor_orchestrator.models import Plan, SubTask
+from cursor_orchestrator.models import Feature, FeaturePlan, Plan, SubTask, Task
 
 
 def _plan(*subtasks: SubTask) -> Plan:
@@ -60,3 +60,66 @@ def test_chunked_parallel_groups_respects_cap():
     chunks = plan.chunked_parallel_groups(max_parallel_agents=2)
     assert [len(c) for c in chunks] == [2, 2, 1]
     assert {t.id for chunk in chunks for t in chunk} == {"0", "1", "2", "3", "4"}
+
+
+def _feature_plan(*features: Feature) -> FeaturePlan:
+    return FeaturePlan(summary="test feature plan", features=list(features))
+
+
+def test_ordered_tasks_respects_cross_feature_dependency():
+    plan = _feature_plan(
+        Feature(id="f1", description="f1", tasks=[Task(id="a", description="a")]),
+        Feature(
+            id="f2",
+            description="f2",
+            tasks=[Task(id="b", description="b", depends_on=["a"])],
+        ),
+    )
+    assert [t.id for t in plan.ordered_tasks()] == ["a", "b"]
+
+
+def test_ordered_tasks_preserves_declared_order_when_independent():
+    plan = _feature_plan(
+        Feature(
+            id="f1",
+            description="f1",
+            tasks=[Task(id="a", description="a"), Task(id="b", description="b")],
+        )
+    )
+    assert [t.id for t in plan.ordered_tasks()] == ["a", "b"]
+
+
+def test_ordered_tasks_raises_on_duplicate_task_ids_across_features():
+    plan = _feature_plan(
+        Feature(id="f1", description="f1", tasks=[Task(id="a", description="first a")]),
+        Feature(id="f2", description="f2", tasks=[Task(id="a", description="second a")]),
+    )
+    with pytest.raises(ValueError, match="duplicate task ids"):
+        plan.ordered_tasks()
+
+
+def test_ordered_tasks_raises_on_unknown_dependency():
+    plan = _feature_plan(
+        Feature(
+            id="f1",
+            description="f1",
+            tasks=[Task(id="a", description="a", depends_on=["missing"])],
+        )
+    )
+    with pytest.raises(ValueError, match="unknown task"):
+        plan.ordered_tasks()
+
+
+def test_ordered_tasks_raises_on_cycle():
+    plan = _feature_plan(
+        Feature(
+            id="f1",
+            description="f1",
+            tasks=[
+                Task(id="a", description="a", depends_on=["b"]),
+                Task(id="b", description="b", depends_on=["a"]),
+            ],
+        )
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        plan.ordered_tasks()

@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from cursor_orchestrator.models import (
+    FeaturePlan,
     Plan,
     PlanCritique,
     ReviewResult,
@@ -68,6 +69,11 @@ class CursorClientBase(ABC):
     def push_fix_commit(self, branch: str, worktree_path: str, message: str) -> str:
         """Pushes whatever is staged in worktree_path as a fix commit; returns new HEAD SHA."""
 
+    @abstractmethod
+    def get_pr_merge_state(self, pr: PullRequest) -> str:
+        """Returns "open" | "merged" | "closed" -- used by campaign.py to wait for an
+        actual human merge (not just CI-clean) before starting the next sequential task."""
+
 
 class TestClientBase(ABC):
     @abstractmethod
@@ -84,3 +90,14 @@ class ReviewerClientBase(ABC):
 class PlanCriticClientBase(ABC):
     @abstractmethod
     def critique(self, original_prompt: str, plan: Plan) -> PlanCritique: ...
+
+
+class FeaturePlannerClientBase(ABC):
+    """The top-tier planner: decomposes an entire architecture description
+    into features and PR-sized tasks (see models.FeaturePlan). Used only
+    by --sequential campaigns (campaign.py) -- a normal single-prompt run
+    never touches this.
+    """
+
+    @abstractmethod
+    def plan_features(self, architecture_prompt: str) -> FeaturePlan: ...

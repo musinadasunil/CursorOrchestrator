@@ -36,6 +36,7 @@ class LimitsConfig:
     babysit_poll_interval_seconds: float
     cursor_agent_timeout_seconds: float
     gh_timeout_seconds: float
+    merge_poll_interval_seconds: float
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,8 @@ class OrchestratorConfig:
             raise ConfigError("limits.cursor_agent_timeout_seconds must be > 0")
         if self.limits.gh_timeout_seconds <= 0:
             raise ConfigError("limits.gh_timeout_seconds must be > 0")
+        if self.limits.merge_poll_interval_seconds <= 0:
+            raise ConfigError("limits.merge_poll_interval_seconds must be > 0")
         if self.git.pr_backend not in ("gh", "api"):
             raise ConfigError(
                 f"git.pr_backend must be 'gh' or 'api', got {self.git.pr_backend!r}"

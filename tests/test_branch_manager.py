@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from cursor_orchestrator.branch_manager import BranchManager, MergeConflictError
+from cursor_orchestrator.branch_manager import (
+    BranchManager,
+    BranchManagerError,
+    MergeConflictError,
+    sync_base_branch,
+)
 
 
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
@@ -21,6 +26,24 @@ def repo(tmp_path: Path) -> Path:
     _git("add", "-A", cwd=repo_path)
     _git("commit", "-m", "initial commit", cwd=repo_path)
     return repo_path
+
+
+@pytest.fixture
+def origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git("init", "-b", "main", cwd=origin)
+    _git("config", "user.email", "test@example.com", cwd=origin)
+    _git("config", "user.name", "Test", cwd=origin)
+    (origin / "README.md").write_text("initial\n")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-m", "initial commit", cwd=origin)
+
+    clone = tmp_path / "clone"
+    _git("clone", str(origin), str(clone), cwd=tmp_path)
+    _git("config", "user.email", "test@example.com", cwd=clone)
+    _git("config", "user.name", "Test", cwd=clone)
+    return origin, clone
 
 
 def test_create_worktree_and_merge_independent_subtasks(repo: Path):
@@ -79,3 +102,32 @@ def test_get_head_sha_matches_git_rev_parse(repo: Path):
     expected = _git("rev-parse", "feature/sha", cwd=repo).stdout.strip()
     assert bm.get_head_sha() == expected
     bm.cleanup()
+
+
+def test_sync_base_branch_fast_forwards_to_origin(origin_and_clone):
+    origin, clone = origin_and_clone
+    (origin / "new_on_origin.txt").write_text("landed on origin\n")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-m", "new commit on origin", cwd=origin)
+
+    sync_base_branch(str(clone), "main")
+
+    assert (clone / "new_on_origin.txt").exists()
+    expected = _git("rev-parse", "main", cwd=origin).stdout.strip()
+    actual = _git("rev-parse", "main", cwd=clone).stdout.strip()
+    assert actual == expected
+
+
+def test_sync_base_branch_raises_on_diverged_history(origin_and_clone):
+    origin, clone = origin_and_clone
+
+    (origin / "new_on_origin.txt").write_text("landed on origin\n")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-m", "new commit on origin", cwd=origin)
+
+    (clone / "new_on_clone.txt").write_text("local-only commit\n")
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-m", "local-only commit, diverges from origin", cwd=clone)
+
+    with pytest.raises(BranchManagerError):
+        sync_base_branch(str(clone), "main")

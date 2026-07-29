@@ -26,6 +26,7 @@ This puts `cursor-orchestrator` on your `PATH` as a global command.
 ```
 cursor-orchestrator --dry-run "add input validation to the signup form"
 cursor-orchestrator "add input validation to the signup form"
+cursor-orchestrator --prompt-file ./prompt.md
 ```
 
 `--dry-run` uses mock clients (no network calls, no real PR) and walks
@@ -33,6 +34,46 @@ the entire state machine -- plan, human scope-approval prompt, a
 simulated revision cycle, and a simulated CI-failure-then-fix during
 babysitting -- so you can see the whole flow before pointing it at a
 real repo.
+
+The prompt can come from a `.md`/`.txt` file instead of the command
+line via `--prompt-file`/`-f` (its contents are read and stripped) --
+useful once the prompt is long, e.g. a whole architecture description
+for `--sequential` below. Pass exactly one of the positional prompt or
+`--prompt-file`, not both.
+
+### `--sequential`: an entire architecture, not just one prompt
+
+```
+cursor-orchestrator --dry-run --sequential --prompt-file ./architecture.md
+cursor-orchestrator --sequential --prompt-file ./architecture.md
+```
+
+Instead of one prompt -> one PR, `--sequential` treats the prompt as a
+whole architecture: it's decomposed into features, each into small
+tasks sized so a single resulting PR stays reviewable by one person.
+Tasks are built **one at a time** -- each goes through the exact same
+plan -> human approval -> build -> review -> PR flow as a normal run,
+but this time the tool actually **waits for a human to merge that PR**
+(not just for CI to go green, which is as far as a normal run waits)
+before syncing `main` and branching off for the next task.
+
+That wait is unbounded and can take a long time -- it's meant to be
+interrupted (Ctrl-C, a closed laptop, a dropped SSH session) and
+resumed, not sat through in one process. Progress is persisted to a
+state file after every step (default under
+`~/.cursor-orchestrator/campaigns/`, overridable with `--state-file`);
+re-running the identical command detects it and resumes -- skipping
+feature-planning and any already-merged task -- instead of starting the
+whole architecture over.
+
+If a task's build gets aborted, taken over, or escalated, or its PR gets
+closed without merging, the whole campaign halts there and prints which
+task needs attention -- it does not attempt to skip ahead or guess a fix.
+
+Known simplification: the plan critic's independent second opinion
+still applies to each task's own subtask plan, but not yet to the
+higher-level feature/task breakdown itself -- that only gets the
+human's read at the one approval gate.
 
 A real (non-dry-run) run needs:
 - the `cursor-agent` CLI installed and authenticated (verify its flags
@@ -84,6 +125,11 @@ Every `cursor-agent`/`gh` subprocess call also has a hard timeout
 without one, a single hung process would hang the whole orchestrator
 forever. Raise these if you hit false-positive timeouts on legitimately
 slow tasks.
+
+`limits.merge_poll_interval_seconds` only matters for `--sequential`: how
+often it checks whether a task's PR has been merged yet. Unlike the caps
+above, there's no matching wall-clock/iteration cap on this wait --
+waiting for a human to merge is the point, not a failure mode.
 
 To use your own settings without editing the installed copy, copy that
 file somewhere and pass `--config /path/to/your-config.yaml`.

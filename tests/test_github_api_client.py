@@ -72,3 +72,21 @@ def test_pr_number_raises_on_unparseable_url():
     pr = PullRequest(url="https://example.invalid/not-a-pr-url", branch="feature/x", head_sha="sha")
     with pytest.raises(GithubApiError):
         client._pr_number(pr)
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        ({"merged": True, "state": "closed"}, "merged"),
+        ({"merged": False, "state": "open"}, "open"),
+        ({"merged": False, "state": "closed"}, "closed"),
+    ],
+)
+def test_get_pr_merge_state(monkeypatch, payload, expected):
+    from cursor_orchestrator.clients.base import PullRequest
+
+    client = GithubApiClient.__new__(GithubApiClient)
+    client.owner, client.repo = "owner", "repo"
+    monkeypatch.setattr(client, "_request", lambda method, path: payload)
+    pr = PullRequest(url="https://github.com/owner/repo/pull/42", branch="feature/x", head_sha="sha")
+    assert client.get_pr_merge_state(pr) == expected

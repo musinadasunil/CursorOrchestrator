@@ -24,6 +24,7 @@ def _config(**limit_overrides) -> OrchestratorConfig:
         babysit_poll_interval_seconds=0.01,
         cursor_agent_timeout_seconds=60,
         gh_timeout_seconds=30,
+        merge_poll_interval_seconds=0.01,
     )
     limits.update(limit_overrides)
     return OrchestratorConfig(
@@ -73,7 +74,35 @@ def test_full_dry_run_opens_a_pr_after_the_simulated_revision_cycle():
     assert not result.aborted
     assert not result.took_over
     assert result.pr_url is not None
+    assert result.babysit_outcome == "clean"
     assert gate.scope_calls == 1
+
+
+def test_run_uses_the_given_branch_name_when_provided():
+    class RecordingCursorClient(MockCursorClient):
+        def __init__(self):
+            super().__init__()
+            self.created_branch = None
+
+        def create_pr(self, branch, base_branch, title, body):
+            self.created_branch = branch
+            return super().create_pr(branch, base_branch, title, body)
+
+    cursor_client = RecordingCursorClient()
+    gate = ScriptedHumanGate(scope_decision="approve")
+    orchestrator = Orchestrator(
+        config=_config(),
+        cursor_client=cursor_client,
+        test_client=MockTestClient(),
+        reviewer_client=MockReviewerClient(),
+        plan_critic_client=MockPlanCriticClient(),
+        human_gate=gate,
+        dry_run=True,
+    )
+
+    orchestrator.run("add a widget", branch_name="orchestrator/feature-1-task-a")
+
+    assert cursor_client.created_branch == "orchestrator/feature-1-task-a"
 
 
 def test_human_can_abort_at_scope_approval():

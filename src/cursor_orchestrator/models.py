@@ -122,6 +122,74 @@ class PlanCritiqueFinding:
 
 
 @dataclass
+class Task:
+    id: str
+    description: str
+    depends_on: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Feature:
+    id: str
+    description: str
+    tasks: list[Task]
+
+
+@dataclass
+class FeaturePlan:
+    """The top tier of planning, one level above Plan/SubTask: an entire
+    architecture decomposed into features, each into small tasks. Each
+    Task is sized to become exactly one branch and one PR -- small enough
+    for a human to review -- and is itself handed to the normal
+    plan/build/review/PR machinery (its own Plan/SubTask breakdown) once
+    its turn comes up in campaign.py's sequential execution.
+    """
+
+    summary: str
+    features: list[Feature]
+
+    def ordered_tasks(self) -> list[Task]:
+        """Flatten every feature's tasks into one strict sequential build
+        order, respecting depends_on across the whole plan (not just
+        within a feature). Unlike Plan.parallel_groups(), there is no
+        batching -- campaign.py always builds one task at a time -- so
+        this returns a flat list: a stable topological sort, ties broken
+        by declared feature/task order.
+        """
+        all_tasks = [t for f in self.features for t in f.tasks]
+
+        duplicates = sorted(
+            tid for tid, count in Counter(t.id for t in all_tasks).items() if count > 1
+        )
+        if duplicates:
+            raise ValueError(f"duplicate task ids in feature plan: {duplicates}")
+
+        by_id = {t.id: t for t in all_tasks}
+        for task in all_tasks:
+            for dep in task.depends_on:
+                if dep not in by_id:
+                    raise ValueError(
+                        f"task {task.id!r} depends on unknown task {dep!r}"
+                    )
+
+        remaining = {t.id: set(t.depends_on) for t in all_tasks}
+        done: set[str] = set()
+        ordered: list[Task] = []
+
+        while remaining:
+            ready = [t for t in all_tasks if t.id in remaining and remaining[t.id] <= done]
+            if not ready:
+                cycle = ", ".join(sorted(remaining))
+                raise ValueError(f"dependency cycle detected among tasks: {cycle}")
+            for task in ready:
+                ordered.append(task)
+                done.add(task.id)
+                del remaining[task.id]
+
+        return ordered
+
+
+@dataclass
 class PlanCritique:
     """Advisory second opinion on the plan itself -- decomposition, missing
     or unnecessary depends_on edges, over/under-granular subtasks. Shown to
